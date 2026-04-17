@@ -7,16 +7,20 @@ import {
   Search,
   Filter,
   CalendarDays,
-  CheckCircle2,
   Printer,
   BookOpen,
   MousePointer2,
   TrendingUp,
+  TableProperties,
+  CheckCircle2,
+  History,
+  ToggleLeft,
+  ToggleRight,
 } from 'lucide-react';
 
-// 구글 앱스 스크립트 웹 앱 URL (현장 입력 앱과 동일한 주소)
-const GOOGLE_SCRIPT_URL =
-  'https://script.google.com/macros/s/AKfycbynQIpU1GgwhQ3OYkokxTrSuac53UTEoa-4Zg8sktbce0WW8ajHOujEHAAhMiwGkveH/exec';
+// [중요] 1단계에서 새로 발급받은 '대시보드 전용 웹 앱 URL'을 여기에 꼭 넣어주세요!
+const DASHBOARD_SCRIPT_URL =
+  'https://script.google.com/macros/s/AKfycbzpaQp8E6tTOVofHCoaa4duf5Y7Cw0vwJn6o6cpK3SXxy_G1Ore9ibj-GukGarTVhvNZg/exec';
 
 const TABS = [
   '전체',
@@ -28,7 +32,6 @@ const TABS = [
   '격리실험실',
 ];
 
-// 날짜 포맷 함수 (YYYY-MM-DD)
 const formatDate = (dateObj) => {
   return `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(
     2,
@@ -36,44 +39,53 @@ const formatDate = (dateObj) => {
   )}-${String(dateObj.getDate()).padStart(2, '0')}`;
 };
 
-export default function App() {
+export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('전체');
-  const [dashboardData, setDashboardData] = useState([]);
+  const [serverPayload, setServerPayload] = useState({
+    matrixSummary: {},
+    columnsMeta: {},
+    recentRawData: [],
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [lastUpdated, setLastUpdated] = useState('업데이트 필요');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // 사육실별 일자별 추이 패널 토글 상태
-  const [showRoomTrend, setShowRoomTrend] = useState(false);
+  // [신규] 매트릭스 뷰에서 활성 과제만 볼지, 종료된 과제도 포함할지 결정하는 토글 상태
+  const [showActiveOnly, setShowActiveOnly] = useState(true);
 
-  // 상세 데이터 테이블 다중 필터 상태
-  const [filterSpecies, setFilterSpecies] = useState('전체');
+  // 리스트 뷰 필터
   const [filterPI, setFilterPI] = useState('전체');
   const [filterProject, setFilterProject] = useState('전체');
   const [tableStartDate, setTableStartDate] = useState('');
   const [tableEndDate, setTableEndDate] = useState('');
 
-  // 통합 변동 내역 필터 상태 (디폴트: 최근 30일 ~ 오늘)
+  // 60일 특이사항 뷰 필터
   const today = new Date();
-  const thirtyDaysAgo = new Date(today);
-  thirtyDaysAgo.setDate(today.getDate() - 30);
+  const sixtyDaysAgo = new Date(today);
+  sixtyDaysAgo.setDate(today.getDate() - 60);
 
   const [eventStartDate, setEventStartDate] = useState(
-    formatDate(thirtyDaysAgo)
+    formatDate(sixtyDaysAgo)
   );
   const [eventEndDate, setEventEndDate] = useState(formatDate(today));
   const [eventSearch, setEventSearch] = useState('');
   const [eventTypeFilter, setEventTypeFilter] = useState('전체');
 
-  // 데이터 로드 함수 (가상 데이터 생성 로직 완전 제거)
+  // 데이터 로드
   const fetchDashboardData = async () => {
+    if (DASHBOARD_SCRIPT_URL.includes('여기에_')) {
+      alert(
+        '코드 8번째 줄의 DASHBOARD_SCRIPT_URL 에 새 서버 주소를 넣어야 작동합니다!'
+      );
+      return;
+    }
     setIsLoading(true);
     try {
-      const response = await fetch(GOOGLE_SCRIPT_URL);
-      const serverResponse = await response.json();
+      const response = await fetch(DASHBOARD_SCRIPT_URL);
+      const data = await response.json();
 
-      if (serverResponse.data) {
-        setDashboardData(serverResponse.data);
+      if (data.recentRawData) {
+        setServerPayload(data);
         const now = new Date();
         setLastUpdated(
           `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(
@@ -96,7 +108,7 @@ export default function App() {
     fetchDashboardData();
   }, []);
 
-  // 데이터 가공 로직 (통계 산출 및 실제 이벤트 추출)
+  // 1. KPI 및 최근 14일 추이 (최근 60일 원본 데이터에서 계산)
   const stats = useMemo(() => {
     const s = {
       mouse: { heads: 0, cages: 0 },
@@ -104,14 +116,23 @@ export default function App() {
       rabbit: { heads: 0, cages: 0 },
       activeProjects: new Set(),
       realEvents: [],
-      todayTrend: [], // 실전용 오늘 데이터 1줄 보관용
+      todayTrend: [],
     };
+    const rawData = serverPayload.recentRawData;
+    if (!rawData || rawData.length === 0) return s;
 
-    const currentTodayDate = formatDate(new Date());
+    const latestDatePerRoom = {};
+    rawData.forEach((item) => {
+      if (
+        !latestDatePerRoom[item.roomName] ||
+        item.date > latestDatePerRoom[item.roomName]
+      )
+        latestDatePerRoom[item.roomName] = item.date;
+    });
 
-    dashboardData.forEach((item) => {
-      if (!item.projectId || item.projectId === 'NONE') return;
+    const trendMap = {};
 
+    rawData.forEach((item) => {
       const count = Number(item.animalCount) || 0;
       const isMouse =
         item.roomName.includes('Mouse') ||
@@ -124,26 +145,27 @@ export default function App() {
       const isRabbit =
         item.roomName.includes('중동물') || item.strain.includes('Rabbit');
 
-      if (item.projectId) s.activeProjects.add(item.projectId);
-
+      if (!trendMap[item.date])
+        trendMap[item.date] = {
+          mouse: { heads: 0, cages: 0 },
+          rat: { heads: 0, cages: 0 },
+          rabbit: { heads: 0, cages: 0 },
+        };
       if (isMouse) {
-        s.mouse.heads += count;
-        s.mouse.cages += 1;
+        trendMap[item.date].mouse.heads += count;
+        trendMap[item.date].mouse.cages += 1;
       } else if (isRat) {
-        s.rat.heads += count;
-        s.rat.cages += 1;
+        trendMap[item.date].rat.heads += count;
+        trendMap[item.date].rat.cages += 1;
       } else if (isRabbit) {
-        s.rabbit.heads += count;
-        s.rabbit.cages += 1;
+        trendMap[item.date].rabbit.heads += count;
+        trendMap[item.date].rabbit.cages += 1;
       }
 
-      // 오늘 날짜의 실제 태그/경고를 추출 (실전 데이터)
       const loc = `${item.roomName} ${item.rackId}동 ${item.cageId}`;
-      const itemDate = item.date || currentTodayDate;
-
       if (item.warnings)
         s.realEvents.push({
-          date: itemDate,
+          date: item.date,
           location: loc,
           pi: item.pi,
           type: '경고',
@@ -152,7 +174,7 @@ export default function App() {
         });
       if (item.note)
         s.realEvents.push({
-          date: itemDate,
+          date: item.date,
           location: loc,
           pi: item.pi,
           type: '메모',
@@ -169,9 +191,8 @@ export default function App() {
           col = 'text-amber-700 bg-amber-100 border-amber-200';
         if (item.status === '이동')
           col = 'text-purple-700 bg-purple-100 border-purple-200';
-
         s.realEvents.push({
-          date: itemDate,
+          date: item.date,
           location: loc,
           pi: item.pi,
           type: '상태',
@@ -179,38 +200,105 @@ export default function App() {
           color: col,
         });
       }
+
+      if (item.date === latestDatePerRoom[item.roomName]) {
+        s.activeProjects.add(item.projectId);
+        if (isMouse) {
+          s.mouse.heads += count;
+          s.mouse.cages += 1;
+        } else if (isRat) {
+          s.rat.heads += count;
+          s.rat.cages += 1;
+        } else if (isRabbit) {
+          s.rabbit.heads += count;
+          s.rabbit.cages += 1;
+        }
+      }
     });
 
-    // 실전용 추이 데이터 세팅 (현재는 오늘 데이터만 존재)
-    s.todayTrend = [
-      {
-        date: currentTodayDate,
-        displayDate: `${String(new Date().getMonth() + 1).padStart(
-          2,
-          '0'
-        )}/${String(new Date().getDate()).padStart(2, '0')} (오늘)`,
-        mouse: { heads: s.mouse.heads, cages: s.mouse.cages },
-        rat: { heads: s.rat.heads, cages: s.rat.cages },
-        rabbit: { heads: s.rabbit.heads, cages: s.rabbit.cages },
-      },
-    ];
+    const trendDates = Object.keys(trendMap)
+      .sort((a, b) => new Date(b) - new Date(a))
+      .slice(0, 14);
+    s.todayTrend = trendDates.map((date) => {
+      const dObj = new Date(date);
+      return {
+        date: date,
+        displayDate: `${String(dObj.getMonth() + 1).padStart(2, '0')}/${String(
+          dObj.getDate()
+        ).padStart(2, '0')}`,
+        ...trendMap[date],
+      };
+    });
 
     return s;
-  }, [dashboardData]);
+  }, [serverPayload.recentRawData]);
 
-  // 통합 이벤트 검색 및 필터링 로직 (오직 실전 데이터만 사용)
+  // 2. [핵심] 서버 압축 데이터를 엑셀 매트릭스로 변환 + 스마트 자동 숨김 적용
+  const roomMatrixData = useMemo(() => {
+    if (activeTab === '전체' || !serverPayload.matrixSummary[activeTab])
+      return null;
+
+    const roomSummary = serverPayload.matrixSummary[activeTab];
+    const roomColsMeta = serverPayload.columnsMeta[activeTab];
+
+    // 날짜를 최신순으로 정렬
+    const sortedDates = Object.keys(roomSummary).sort(
+      (a, b) => new Date(b) - new Date(a)
+    );
+    const latestDate = sortedDates[0]; // 가장 최근 날짜 (오늘 또는 마지막 입력일)
+
+    // 각 컬럼별로 "현재 활성 상태인가?" 판단 (가장 최근 날짜에 케이지가 1개 이상 있으면 활성)
+    const processedColsMeta = {};
+    Object.keys(roomColsMeta).forEach((colKey) => {
+      const isCurrentlyActive =
+        (roomSummary[latestDate]?.values[colKey]?.cages || 0) > 0;
+      processedColsMeta[colKey] = {
+        ...roomColsMeta[colKey],
+        isActive: isCurrentlyActive,
+      };
+    });
+
+    // 화면에 보여줄 컬럼만 필터링 (토글 상태에 따라 결정)
+    const visibleColKeys = Object.keys(processedColsMeta).filter((colKey) => {
+      // '활성 과제만 보기'가 켜져있으면 isActive가 true인 것만, 꺼져있으면 전부 다 보여줌
+      return showActiveOnly ? processedColsMeta[colKey].isActive : true;
+    });
+
+    // 필터링된 컬럼들을 정렬 (PI 오름차순 -> 학과 오름차순 -> 사육대 순서)
+    const sortedVisibleColKeys = visibleColKeys.sort((a, b) => {
+      const colA = processedColsMeta[a];
+      const colB = processedColsMeta[b];
+      if (colA.pi !== colB.pi) return colA.pi.localeCompare(colB.pi);
+      if (colA.projectId !== colB.projectId)
+        return colA.projectId.localeCompare(colB.projectId);
+      return colA.rackId.localeCompare(colB.rackId);
+    });
+
+    const visibleColumns = sortedVisibleColKeys.map(
+      (key) => processedColsMeta[key]
+    );
+
+    return {
+      columns: visibleColumns,
+      colKeys: sortedVisibleColKeys,
+      roomSummary,
+      sortedDates,
+    };
+  }, [
+    serverPayload.matrixSummary,
+    serverPayload.columnsMeta,
+    activeTab,
+    showActiveOnly,
+  ]);
+
+  // 3. 60일 치 메모/경고 이벤트 필터링
   const filteredEvents = useMemo(() => {
     let allEvents = [...stats.realEvents];
-
-    // 날짜 필터 적용
     allEvents = allEvents.filter(
       (ev) => ev.date >= eventStartDate && ev.date <= eventEndDate
     );
-
-    if (eventTypeFilter !== '전체') {
+    if (eventTypeFilter !== '전체')
       allEvents = allEvents.filter((ev) => ev.type === eventTypeFilter);
-    }
-
     if (eventSearch) {
       const q = eventSearch.toLowerCase();
       allEvents = allEvents.filter(
@@ -220,7 +308,6 @@ export default function App() {
           ev.pi.toLowerCase().includes(q)
       );
     }
-
     return allEvents.sort((a, b) => new Date(b.date) - new Date(a.date));
   }, [
     stats.realEvents,
@@ -230,89 +317,56 @@ export default function App() {
     eventSearch,
   ]);
 
-  // 드롭다운 필터 옵션 추출 로직
+  // 4. 개별 케이지 리스트 뷰 (최근 60일 내 검색용)
   const filterOptions = useMemo(() => {
     const pis = new Set();
     const projects = new Set();
-
-    let data = dashboardData.filter(
-      (item) => item.projectId && item.projectId !== 'NONE'
-    );
-    if (activeTab !== '전체') {
+    let data = serverPayload.recentRawData || [];
+    if (activeTab !== '전체')
       data = data.filter((item) => item.roomName.includes(activeTab));
-    }
-
     data.forEach((item) => {
       if (item.pi) pis.add(item.pi);
       if (item.projectId) projects.add(item.projectId);
     });
-
     return {
       pis: Array.from(pis).sort(),
       projects: Array.from(projects).sort(),
     };
-  }, [dashboardData, activeTab]);
+  }, [serverPayload.recentRawData, activeTab]);
 
-  // 다중 필터 적용 로직
-  const { filteredTableData, roomStats } = useMemo(() => {
-    let data = dashboardData.filter(
-      (item) => item.projectId && item.projectId !== 'NONE'
-    );
+  const { filteredTableData } = useMemo(() => {
+    const rawData = serverPayload.recentRawData || [];
+    if (rawData.length === 0) return { filteredTableData: [] };
 
-    let currentRoomHeads = 0;
-    let currentRoomCages = 0;
+    const latestDatePerRoom = {};
+    rawData.forEach((item) => {
+      if (
+        !latestDatePerRoom[item.roomName] ||
+        item.date > latestDatePerRoom[item.roomName]
+      )
+        latestDatePerRoom[item.roomName] = item.date;
+    });
 
-    // 1. 탭(사육실) 필터 적용 및 사육실 통계 산출
-    if (activeTab !== '전체') {
-      const roomData = data.filter((item) => item.roomName.includes(activeTab));
-      roomData.forEach((item) => {
-        currentRoomHeads += Number(item.animalCount) || 0;
-        currentRoomCages += 1;
-      });
-      data = roomData;
+    let data = [...rawData];
+
+    if (tableStartDate || tableEndDate) {
+      if (tableStartDate)
+        data = data.filter((item) => item.date && item.date >= tableStartDate);
+      if (tableEndDate)
+        data = data.filter((item) => item.date && item.date <= tableEndDate);
     } else {
-      data.forEach((item) => {
-        currentRoomHeads += Number(item.animalCount) || 0;
-        currentRoomCages += 1;
-      });
+      data = data.filter(
+        (item) => item.date === latestDatePerRoom[item.roomName]
+      );
     }
 
-    // 2. 날짜 필터 적용
-    if (tableStartDate) {
-      data = data.filter((item) => item.date && item.date >= tableStartDate);
-    }
-    if (tableEndDate) {
-      data = data.filter((item) => item.date && item.date <= tableEndDate);
+    if (activeTab !== '전체') {
+      data = data.filter((item) => item.roomName.includes(activeTab));
     }
 
-    // 3. 종별(Species) 필터 적용
-    if (filterSpecies !== '전체') {
-      if (filterSpecies === 'Mouse')
-        data = data.filter(
-          (item) =>
-            item.roomName.includes('Mouse') ||
-            item.strain.includes('mouse') ||
-            item.strain.includes('BALB') ||
-            item.strain.includes('C57') ||
-            item.strain.includes('ICR')
-        );
-      else if (filterSpecies === 'Rat')
-        data = data.filter(
-          (item) => item.roomName.includes('Rat') || item.strain.includes('Rat')
-        );
-      else if (filterSpecies === 'Rabbit')
-        data = data.filter(
-          (item) =>
-            item.roomName.includes('중동물') || item.strain.includes('Rabbit')
-        );
-    }
-
-    // 4. PI 및 과제번호 필터 적용
     if (filterPI !== '전체') data = data.filter((item) => item.pi === filterPI);
     if (filterProject !== '전체')
       data = data.filter((item) => item.projectId === filterProject);
-
-    // 5. 텍스트 검색어 필터 적용
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       data = data.filter(
@@ -320,19 +374,19 @@ export default function App() {
           (item.pi && item.pi.toLowerCase().includes(q)) ||
           (item.projectId && item.projectId.toLowerCase().includes(q)) ||
           (item.strain && item.strain.toLowerCase().includes(q)) ||
-          (item.affiliation && item.affiliation.toLowerCase().includes(q)) ||
           (item.note && item.note.toLowerCase().includes(q))
       );
     }
 
-    return {
-      filteredTableData: data,
-      roomStats: { heads: currentRoomHeads, cages: currentRoomCages },
-    };
+    data.sort((a, b) => {
+      if (a.rackId !== b.rackId) return a.rackId.localeCompare(b.rackId);
+      return a.cageId.localeCompare(b.cageId);
+    });
+
+    return { filteredTableData: data };
   }, [
-    dashboardData,
+    serverPayload.recentRawData,
     activeTab,
-    filterSpecies,
     filterPI,
     filterProject,
     tableStartDate,
@@ -340,35 +394,25 @@ export default function App() {
     searchQuery,
   ]);
 
-  // 실전용 사육실별 오늘 추이 데이터 세팅
-  const roomTrendData = useMemo(() => {
-    if (activeTab === '전체') return [];
-
-    const tToday = new Date();
-    return [
-      {
-        date: formatDate(tToday),
-        displayDate: `${String(tToday.getMonth() + 1).padStart(
-          2,
-          '0'
-        )}/${String(tToday.getDate()).padStart(2, '0')} (오늘)`,
-        heads: roomStats.heads,
-        cages: roomStats.cages,
-      },
-    ];
-  }, [roomStats, activeTab]);
-
   return (
     <div
       className="min-h-screen bg-slate-100 p-2 md:p-6 text-slate-800 font-sans"
       style={{ fontFamily: "'Pretendard', sans-serif" }}
     >
-      <style>{`@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");`}</style>
+      <style>{`
+        @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
+        .matrix-table th, .matrix-table td { border: 1px solid #e2e8f0; }
+        /* 스크롤 시 틀 고정(Sticky) 설정 */
+        .sticky-col-1 { position: sticky; left: 0; z-index: 20; background-color: white; border-right: 2px solid #cbd5e1 !important; }
+        .sticky-col-2 { position: sticky; left: 90px; z-index: 20; background-color: #f8fafc; }
+        .sticky-col-3 { position: sticky; left: 150px; z-index: 20; background-color: #f8fafc; border-right: 2px solid #cbd5e1 !important; }
+        .matrix-table thead .sticky-col-1, .matrix-table thead .sticky-col-2, .matrix-table thead .sticky-col-3 { z-index: 30; }
+      `}</style>
 
-      {/* ---------------- Header ---------------- */}
-      <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 bg-white p-4 md:p-5 rounded-2xl shadow-sm border border-slate-200 gap-4 print:shadow-none print:border-b-2 print:border-slate-800 print:rounded-none print:p-0 print:mb-4 print:bg-transparent">
+      {/* ---------------- 헤더 영역 ---------------- */}
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 bg-white p-4 md:p-5 rounded-2xl shadow-sm border border-slate-200 gap-4 print:hidden">
         <div className="flex items-center gap-3 md:gap-4">
-          <div className="w-10 h-10 md:w-12 md:h-12 bg-indigo-600 rounded-xl flex items-center justify-center shadow-indigo-200 shadow-lg shrink-0 print:shadow-none print:bg-slate-800">
+          <div className="w-10 h-10 md:w-12 md:h-12 bg-indigo-600 rounded-xl flex items-center justify-center shadow-indigo-200 shadow-lg shrink-0">
             <Activity className="w-6 h-6 text-white" />
           </div>
           <div>
@@ -377,26 +421,28 @@ export default function App() {
             </h1>
             <p className="text-xs md:text-sm text-slate-500 font-medium mt-1">
               Data Based On:{' '}
-              <span className="font-bold text-indigo-600 ml-1 print:text-slate-800">
+              <span className="font-bold text-indigo-600 ml-1">
                 {lastUpdated}
               </span>
             </p>
           </div>
         </div>
 
-        <div className="flex w-full md:w-auto gap-2 print:hidden">
-          <div className="relative flex-1 md:w-56">
-            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-              <Search className="w-4 h-4 text-slate-400" />
+        <div className="flex w-full md:w-auto gap-2">
+          {activeTab === '전체' && (
+            <div className="relative flex-1 md:w-56">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                <Search className="w-4 h-4 text-slate-400" />
+              </div>
+              <input
+                type="text"
+                placeholder="과제, PI, 품종 검색..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all font-medium"
+              />
             </div>
-            <input
-              type="text"
-              placeholder="과제, PI, 품종 검색..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all font-medium"
-            />
-          </div>
+          )}
           <button
             onClick={fetchDashboardData}
             disabled={isLoading}
@@ -410,20 +456,13 @@ export default function App() {
               className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`}
             />
             <span className="hidden lg:inline">
-              {isLoading ? '불러오는 중...' : '새로고침'}
+              {isLoading ? '데이터 로딩중...' : '새로고침'}
             </span>
-          </button>
-          <button
-            onClick={() => window.print()}
-            className="flex items-center justify-center gap-2 px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-sm font-bold shadow-sm transition-all shrink-0"
-          >
-            <Printer className="w-4 h-4" />
-            <span className="hidden lg:inline">PDF 출력</span>
           </button>
         </div>
       </header>
 
-      {/* ---------------- Navigation Tabs ---------------- */}
+      {/* ---------------- 사육실(탭) 네비게이션 ---------------- */}
       <div className="flex overflow-x-auto hide-scrollbar gap-2 mb-6 pb-2 print:hidden">
         {TABS.map((tab) => (
           <button
@@ -431,44 +470,48 @@ export default function App() {
             onClick={() => {
               setActiveTab(tab);
               setSearchQuery('');
-              setFilterSpecies('전체');
               setFilterPI('전체');
               setFilterProject('전체');
               setTableStartDate('');
               setTableEndDate('');
-              setShowRoomTrend(false);
             }}
-            className={`px-5 py-2.5 rounded-xl font-bold text-sm whitespace-nowrap transition-all border-2 ${
+            className={`flex items-center gap-1.5 px-5 py-2.5 rounded-xl font-bold text-sm whitespace-nowrap transition-all border-2 ${
               activeTab === tab
                 ? 'bg-slate-800 text-white border-slate-800 shadow-md'
                 : 'bg-white text-slate-500 border-transparent hover:border-slate-200 hover:text-slate-700 shadow-sm'
             }`}
           >
+            {tab !== '전체' && (
+              <TableProperties
+                className={`w-4 h-4 ${
+                  activeTab === tab ? 'text-indigo-300' : 'text-slate-400'
+                }`}
+              />
+            )}
             {tab}
           </button>
         ))}
       </div>
 
-      {/* ---------------- KPI Cards ---------------- */}
+      {/* ==================== 1. '전체' 탭일 때: 기존 KPI 및 60일 특이사항 보드 ==================== */}
       {activeTab === '전체' && (
         <div className="space-y-6 animate-in fade-in duration-500 mb-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 print:grid-cols-4 print:gap-2">
-            {/* Mouse Card */}
-            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-between print:shadow-none print:border-slate-300">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-between">
               <div className="flex justify-between items-start mb-4">
                 <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600 print:bg-transparent print:border print:border-blue-200">
+                  <div className="w-8 h-8 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600">
                     <MousePointer2 className="w-4 h-4" />
                   </div>
                   <h3 className="font-bold text-slate-700">Mouse</h3>
                 </div>
-                <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded-md print:bg-transparent print:border print:border-blue-200">
-                  전체현황
+                <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded-md">
+                  최신현황
                 </span>
               </div>
               <div>
                 <div className="flex items-end gap-2 mb-1">
-                  <span className="text-4xl font-black text-slate-800 print:text-2xl">
+                  <span className="text-4xl font-black text-slate-800">
                     {stats.mouse.heads.toLocaleString()}
                   </span>
                   <span className="text-sm font-bold text-slate-500 mb-1">
@@ -480,23 +523,21 @@ export default function App() {
                 </p>
               </div>
             </div>
-
-            {/* Rat Card */}
-            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-between print:shadow-none print:border-slate-300">
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-between">
               <div className="flex justify-between items-start mb-4">
                 <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-600 print:bg-transparent print:border print:border-emerald-200">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-600">
                     <MousePointer2 className="w-4 h-4" />
                   </div>
                   <h3 className="font-bold text-slate-700">Rat</h3>
                 </div>
-                <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-md print:bg-transparent print:border print:border-emerald-200">
-                  전체현황
+                <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-md">
+                  최신현황
                 </span>
               </div>
               <div>
                 <div className="flex items-end gap-2 mb-1">
-                  <span className="text-4xl font-black text-slate-800 print:text-2xl">
+                  <span className="text-4xl font-black text-slate-800">
                     {stats.rat.heads.toLocaleString()}
                   </span>
                   <span className="text-sm font-bold text-slate-500 mb-1">
@@ -508,23 +549,21 @@ export default function App() {
                 </p>
               </div>
             </div>
-
-            {/* Rabbit Card */}
-            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-between print:shadow-none print:border-slate-300">
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200 flex flex-col justify-between">
               <div className="flex justify-between items-start mb-4">
                 <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-orange-100 flex items-center justify-center text-orange-600 print:bg-transparent print:border print:border-orange-200">
+                  <div className="w-8 h-8 rounded-lg bg-orange-100 flex items-center justify-center text-orange-600">
                     <Activity className="w-4 h-4" />
                   </div>
                   <h3 className="font-bold text-slate-700">Rabbit</h3>
                 </div>
-                <span className="text-xs font-bold text-orange-600 bg-orange-50 px-2 py-1 rounded-md print:bg-transparent print:border print:border-orange-200">
-                  전체현황
+                <span className="text-xs font-bold text-orange-600 bg-orange-50 px-2 py-1 rounded-md">
+                  최신현황
                 </span>
               </div>
               <div>
                 <div className="flex items-end gap-2 mb-1">
-                  <span className="text-4xl font-black text-slate-800 print:text-2xl">
+                  <span className="text-4xl font-black text-slate-800">
                     {stats.rabbit.heads.toLocaleString()}
                   </span>
                   <span className="text-sm font-bold text-slate-500 mb-1">
@@ -536,167 +575,57 @@ export default function App() {
                 </p>
               </div>
             </div>
-
-            {/* Active Projects */}
-            <div className="bg-slate-800 p-5 rounded-2xl shadow-sm border border-slate-700 flex flex-col justify-between text-white relative overflow-hidden print:bg-white print:text-slate-800 print:border-slate-300 print:shadow-none">
+            <div className="bg-slate-800 p-5 rounded-2xl shadow-sm border border-slate-700 flex flex-col justify-between text-white relative overflow-hidden">
               <div className="absolute -right-6 -top-6 opacity-10 print:hidden">
                 <BookOpen className="w-32 h-32" />
               </div>
               <div className="flex justify-between items-start mb-4 relative z-10">
                 <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center text-white backdrop-blur-sm print:bg-transparent print:text-slate-800 print:border print:border-slate-200">
+                  <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center text-white backdrop-blur-sm">
                     <BookOpen className="w-4 h-4" />
                   </div>
-                  <h3 className="font-bold text-slate-100 print:text-slate-800">
-                    활성 연구과제
-                  </h3>
+                  <h3 className="font-bold text-slate-100">활성 연구과제</h3>
                 </div>
               </div>
               <div className="relative z-10">
                 <div className="flex items-end gap-2 mb-1">
-                  <span className="text-5xl font-black print:text-2xl">
+                  <span className="text-5xl font-black">
                     {stats.activeProjects.size}
                   </span>
-                  <span className="text-sm font-bold text-slate-300 mb-1 print:text-slate-500">
+                  <span className="text-sm font-bold text-slate-300 mb-1">
                     개 과제
                   </span>
                 </div>
-                <p className="text-xs text-slate-400 font-medium mt-2 print:text-slate-500">
+                <p className="text-xs text-slate-400 font-medium mt-2">
                   현재 사육 중인 과제 기준
                 </p>
               </div>
             </div>
           </div>
 
-          {/* 추이 표 및 통합 내역 패널 */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 print:block">
-            {/* 최근 14일 사육 두수 변동 표 (왼쪽 1칸) */}
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col lg:col-span-1 print:shadow-none print:mb-6">
-              <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50 rounded-t-2xl print:bg-transparent">
-                <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                  <CalendarDays className="w-5 h-5 text-indigo-500" /> 최근 14일
-                  추이
-                </h3>
-              </div>
-              <div className="p-0 overflow-x-auto">
-                <table className="w-full text-sm text-left whitespace-nowrap table-fixed">
-                  <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
-                    <tr>
-                      <th className="p-3 w-[16%]">일자</th>
-                      <th className="p-3 text-right w-[22%]">
-                        Mouse{' '}
-                        <span className="block text-[10px] font-normal text-slate-400 mt-0.5">
-                          마리/케이지
-                        </span>
-                      </th>
-                      <th className="p-3 text-right w-[22%]">
-                        Rat{' '}
-                        <span className="block text-[10px] font-normal text-slate-400 mt-0.5">
-                          마리/케이지
-                        </span>
-                      </th>
-                      <th className="p-3 text-right w-[22%]">
-                        Rabbit{' '}
-                        <span className="block text-[10px] font-normal text-slate-400 mt-0.5">
-                          마리/케이지
-                        </span>
-                      </th>
-                      <th className="p-3 text-right font-black text-slate-700 bg-slate-100/50 w-[18%]">
-                        총합{' '}
-                        <span className="block text-[10px] font-normal text-slate-400 mt-0.5">
-                          마리/케이지
-                        </span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {stats.todayTrend.map((d, idx) => {
-                      const totalHeads =
-                        d.mouse.heads + d.rat.heads + d.rabbit.heads;
-                      const totalCages =
-                        d.mouse.cages + d.rat.cages + d.rabbit.cages;
-                      return (
-                        <tr
-                          key={idx}
-                          className="hover:bg-indigo-50/50 transition-colors"
-                        >
-                          <td className="p-3 font-bold text-slate-700">
-                            {d.displayDate}
-                          </td>
-                          <td className="p-3 text-right text-blue-600">
-                            <span className="font-bold text-sm">
-                              {d.mouse.heads.toLocaleString()}
-                            </span>
-                            <span className="text-slate-300 mx-1">/</span>
-                            <span className="text-xs font-medium text-slate-500">
-                              {d.mouse.cages.toLocaleString()}
-                            </span>
-                          </td>
-                          <td className="p-3 text-right text-emerald-600">
-                            <span className="font-bold text-sm">
-                              {d.rat.heads.toLocaleString()}
-                            </span>
-                            <span className="text-slate-300 mx-1">/</span>
-                            <span className="text-xs font-medium text-slate-500">
-                              {d.rat.cages.toLocaleString()}
-                            </span>
-                          </td>
-                          <td className="p-3 text-right text-orange-600">
-                            <span className="font-bold text-sm">
-                              {d.rabbit.heads.toLocaleString()}
-                            </span>
-                            <span className="text-slate-300 mx-1">/</span>
-                            <span className="text-xs font-medium text-slate-500">
-                              {d.rabbit.cages.toLocaleString()}
-                            </span>
-                          </td>
-                          <td className="p-3 text-right font-black text-slate-800 bg-slate-50/50">
-                            <span className="font-bold text-sm">
-                              {totalHeads.toLocaleString()}
-                            </span>
-                            <span className="text-slate-300 mx-1">/</span>
-                            <span className="text-xs font-medium text-slate-500">
-                              {totalCages.toLocaleString()}
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    <tr>
-                      <td
-                        colSpan="5"
-                        className="p-4 text-center text-xs text-slate-400 bg-slate-50/30"
-                      >
-                        * 과거 일자 데이터는 DB 연동 완료 후 순차적으로
-                        표시됩니다.
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* 통합 변동 내역 및 집중 관리 보드 (오른쪽 2칸) */}
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col lg:col-span-2 print:shadow-none h-[500px] lg:h-auto print:h-auto print:break-inside-avoid">
-              <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 rounded-t-2xl print:bg-transparent">
+            {/* 60일 특이사항 보드 */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col lg:col-span-3 h-[600px] lg:h-auto print:h-auto">
+              <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 rounded-t-2xl">
                 <div>
                   <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                    <Activity className="w-5 h-5 text-indigo-500" /> 통합 변동
-                    내역 및 특이사항
+                    <History className="w-5 h-5 text-rose-500" /> 최근 60일
+                    특이사항 및 변동 보드
                   </h3>
                   <p className="text-[10px] text-slate-500 mt-1">
-                    지정된 기간 내 현장에서 등록된 상태 태그 및 경고/메모가
-                    표시됩니다.
+                    시스템 최적화를 위해 상세 메모와 경고는 최근 60일 기록만
+                    보존됩니다.
                   </p>
                 </div>
 
-                {/* 검색 및 필터 달력 UI */}
+                {/* 60일 보드 검색 및 필터 */}
                 <div className="flex flex-wrap gap-2 w-full sm:w-auto print:hidden">
                   <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg p-1">
                     <input
                       type="date"
                       value={eventStartDate}
                       onChange={(e) => setEventStartDate(e.target.value)}
+                      min={formatDate(sixtyDaysAgo)}
                       className="text-xs p-1 focus:outline-none"
                     />
                     <span className="text-slate-400 font-bold">~</span>
@@ -710,11 +639,11 @@ export default function App() {
                   <select
                     value={eventTypeFilter}
                     onChange={(e) => setEventTypeFilter(e.target.value)}
-                    className="text-xs border border-slate-200 rounded-lg p-1.5 focus:outline-none font-bold text-slate-600 bg-white"
+                    className="text-xs border border-slate-200 rounded-lg p-1.5 focus:outline-none font-bold bg-white"
                   >
                     <option value="전체">전체 태그</option>
-                    <option value="상태">상태 (반입/이동 등)</option>
-                    <option value="경고">경고 (과밀사육 등)</option>
+                    <option value="상태">상태</option>
+                    <option value="경고">경고</option>
                     <option value="메모">메모</option>
                   </select>
                   <div className="relative flex-1 sm:w-40">
@@ -724,15 +653,15 @@ export default function App() {
                       placeholder="키워드 검색"
                       value={eventSearch}
                       onChange={(e) => setEventSearch(e.target.value)}
-                      className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none focus:border-indigo-500"
+                      className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded-lg focus:outline-none"
                     />
                   </div>
                 </div>
               </div>
 
-              <div className="p-0 overflow-y-auto flex-1 hide-scrollbar bg-white print:overflow-visible">
+              <div className="p-0 overflow-y-auto flex-1 hide-scrollbar bg-white">
                 <table className="w-full text-sm text-left">
-                  <thead className="bg-white text-slate-400 font-bold text-[10px] uppercase tracking-wider sticky top-0 z-10 shadow-sm print:shadow-none print:static">
+                  <thead className="bg-white text-slate-400 font-bold text-[10px] sticky top-0 z-10 shadow-sm">
                     <tr>
                       <th className="p-3 w-24">일자</th>
                       <th className="p-3 w-16">구분</th>
@@ -754,7 +683,7 @@ export default function App() {
                       filteredEvents.map((ev, idx) => (
                         <tr
                           key={idx}
-                          className="hover:bg-slate-50 transition-colors print:break-inside-avoid"
+                          className="hover:bg-slate-50 transition-colors"
                         >
                           <td className="p-3 text-xs font-bold text-slate-500 whitespace-nowrap">
                             {ev.date.substring(5)}
@@ -788,307 +717,431 @@ export default function App() {
         </div>
       )}
 
-      {/* ---------------- Universal Data Table Block ---------------- */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden animate-in fade-in slide-in-from-bottom-2 print:shadow-none">
-        {/* 통합 테이블 헤더 및 다중 필터 영역 */}
-        <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col gap-3 print:bg-transparent">
-          <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
-            <div>
-              <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 mb-1">
-                <h2 className="text-lg font-black text-slate-800">
-                  {activeTab === '전체'
-                    ? '전체 통합 상세 데이터'
-                    : `${activeTab} 상세 데이터`}
+      {/* ==================== 2. 개별 사육실 탭일 때: 압축 매트릭스 뷰 + 60일 리스트 뷰 ==================== */}
+      {activeTab !== '전체' && (
+        <div className="space-y-6">
+          {/* --- 무한 누적 지원 매트릭스 뷰 (상단) --- */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden animate-in fade-in slide-in-from-bottom-2 flex flex-col">
+            <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-black text-indigo-800 flex items-center gap-2">
+                  <TableProperties className="w-5 h-5" /> {activeTab} 일일 동물
+                  현황 (Matrix)
                 </h2>
-
-                {/* 특정 사육실 탭일 때만 요약 뱃지 표시 */}
-                {activeTab !== '전체' && (
-                  <div className="flex items-center gap-2 bg-indigo-100/50 px-2.5 py-1 rounded-lg border border-indigo-200">
-                    <span className="text-xs font-bold text-indigo-800">
-                      총 두수: {roomStats.heads.toLocaleString()}마리
-                    </span>
-                    <span className="text-indigo-300">|</span>
-                    <span className="text-xs font-bold text-indigo-800">
-                      총 케이지: {roomStats.cages.toLocaleString()}개
-                    </span>
-                  </div>
-                )}
-              </div>
-              <p className="text-xs text-slate-500 font-medium mt-1">
-                현재 조건에 맞는 케이지{' '}
-                <span className="font-bold text-indigo-500">
-                  {filteredTableData.length}
-                </span>
-                개가 표시되고 있습니다.
-              </p>
-            </div>
-
-            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 print:hidden w-full xl:w-auto">
-              <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-md px-1.5 py-1 shadow-sm w-full sm:w-auto">
-                <CalendarDays className="w-3.5 h-3.5 text-slate-400 ml-1" />
-                <input
-                  type="date"
-                  value={tableStartDate}
-                  onChange={(e) => setTableStartDate(e.target.value)}
-                  className="text-xs p-1 focus:outline-none text-slate-600 font-bold bg-transparent cursor-pointer w-full sm:w-auto"
-                />
-                <span className="text-slate-300 font-bold">~</span>
-                <input
-                  type="date"
-                  value={tableEndDate}
-                  onChange={(e) => setTableEndDate(e.target.value)}
-                  className="text-xs p-1 focus:outline-none text-slate-600 font-bold bg-transparent cursor-pointer w-full sm:w-auto"
-                />
+                <p className="text-xs text-slate-500 mt-1">
+                  서버 압축 통신 기술 적용. 1년 이상 무한 누적되어도 속도가
+                  저하되지 않습니다.
+                </p>
               </div>
 
-              {activeTab !== '전체' && (
-                <button
-                  onClick={() => setShowRoomTrend(!showRoomTrend)}
-                  className={`flex items-center justify-center gap-1.5 px-3 py-1.5 border rounded-lg text-xs font-bold transition-colors w-full sm:w-auto ${
-                    showRoomTrend
-                      ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
-                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  <TrendingUp className="w-3.5 h-3.5" /> 일자별 추이{' '}
-                  {showRoomTrend ? '닫기' : '보기'}
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* 강력한 다중 조건 필터 바 */}
-          <div className="flex flex-wrap gap-2 items-center print:hidden mt-1 bg-white p-2 rounded-lg border border-slate-100 shadow-sm">
-            <span className="text-xs font-black text-slate-400 mr-1 flex items-center gap-1">
-              <Filter className="w-3.5 h-3.5" /> 필터
-            </span>
-
-            {activeTab === '전체' && (
-              <select
-                value={filterSpecies}
-                onChange={(e) => setFilterSpecies(e.target.value)}
-                className="text-xs border border-slate-200 rounded-md px-2 py-1.5 focus:outline-none focus:border-indigo-500 font-bold text-slate-600 bg-slate-50 cursor-pointer"
-              >
-                <option value="전체">종별: 전체</option>
-                <option value="Mouse">Mouse (마우스)</option>
-                <option value="Rat">Rat (랫드)</option>
-                <option value="Rabbit">Rabbit (중동물)</option>
-              </select>
-            )}
-
-            <select
-              value={filterPI}
-              onChange={(e) => setFilterPI(e.target.value)}
-              className="text-xs border border-slate-200 rounded-md px-2 py-1.5 focus:outline-none focus:border-indigo-500 font-bold text-slate-600 bg-slate-50 cursor-pointer"
-            >
-              <option value="전체">연구책임자(PI): 전체</option>
-              {filterOptions.pis.map((pi) => (
-                <option key={pi} value={pi}>
-                  {pi}
-                </option>
-              ))}
-            </select>
-
-            <select
-              value={filterProject}
-              onChange={(e) => setFilterProject(e.target.value)}
-              className="text-xs border border-slate-200 rounded-md px-2 py-1.5 focus:outline-none focus:border-indigo-500 font-bold text-slate-600 bg-slate-50 max-w-[200px] sm:max-w-[300px] truncate cursor-pointer"
-            >
-              <option value="전체">과제번호: 전체</option>
-              {filterOptions.projects.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-
-            {(filterSpecies !== '전체' ||
-              filterPI !== '전체' ||
-              filterProject !== '전체' ||
-              tableStartDate !== '' ||
-              tableEndDate !== '') && (
+              {/* [신규 기능] 활성 과제 / 전체 과제 토글 스위치 */}
               <button
-                onClick={() => {
-                  setFilterSpecies('전체');
-                  setFilterPI('전체');
-                  setFilterProject('전체');
-                  setTableStartDate('');
-                  setTableEndDate('');
-                }}
-                className="text-[10px] font-bold text-slate-400 hover:text-red-500 underline ml-2 transition-colors flex items-center gap-1"
+                onClick={() => setShowActiveOnly(!showActiveOnly)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-all ${
+                  showActiveOnly
+                    ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
+                    : 'bg-slate-100 border-slate-300 text-slate-600'
+                }`}
               >
-                조건 초기화
+                {showActiveOnly ? (
+                  <ToggleRight className="w-5 h-5 text-indigo-600" />
+                ) : (
+                  <ToggleLeft className="w-5 h-5 text-slate-400" />
+                )}
+                <span className="text-xs font-bold">
+                  {showActiveOnly
+                    ? '현재 활성화된 과제만 보기'
+                    : '종료된 모든 과거 과제 표시 중'}
+                </span>
               </button>
-            )}
-          </div>
-        </div>
-
-        {/* 사육실 전용 최근 14일 추이 패널 */}
-        {showRoomTrend && activeTab !== '전체' && (
-          <div className="border-b border-slate-200 bg-slate-50/50 p-4 animate-in fade-in slide-in-from-top-2 print:hidden shadow-inner">
-            <h3 className="font-bold text-slate-800 flex items-center gap-2 mb-3">
-              <CalendarDays className="w-4 h-4 text-indigo-500" /> 최근 14일{' '}
-              {activeTab} 사육 변동 추이
-            </h3>
-            <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-2 min-w-max">
-              {roomTrendData.map((d, i) => (
-                <div
-                  key={i}
-                  className={`flex flex-col items-center border rounded-xl p-3 min-w-[120px] bg-indigo-50 border-indigo-200 ring-1 ring-indigo-200 shadow-sm`}
-                >
-                  <span className="text-xs font-bold mb-1.5 text-indigo-700">
-                    {d.displayDate}
-                  </span>
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-lg font-black text-indigo-700">
-                      {d.heads.toLocaleString()}
-                    </span>
-                    <span className="text-[10px] font-bold text-slate-400">
-                      마리
-                    </span>
-                  </div>
-                  <div className="text-[10px] font-bold text-slate-500 bg-slate-100/70 px-2 py-0.5 rounded mt-1 w-full text-center">
-                    {d.cages.toLocaleString()} 케이지
-                  </div>
-                </div>
-              ))}
-              <div className="flex items-center justify-center p-3 min-w-[150px] text-xs font-medium text-slate-400 border border-dashed border-slate-300 rounded-xl bg-slate-50/50">
-                과거 데이터는 DB 분리 <br /> 업데이트 후 연동됩니다.
-              </div>
             </div>
-          </div>
-        )}
 
-        <div className="overflow-x-auto print:overflow-visible min-h-[300px]">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-white border-b-2 border-slate-100">
-                <th className="p-3 text-xs font-black text-slate-500 uppercase tracking-wider whitespace-nowrap">
-                  일자 / 위치
-                </th>
-                <th className="p-3 text-xs font-black text-slate-500 uppercase tracking-wider">
-                  과제번호 (PI / 학과)
-                </th>
-                <th className="p-3 text-xs font-black text-slate-500 uppercase tracking-wider">
-                  품종 / 계통
-                </th>
-                <th className="p-3 text-xs font-black text-slate-500 uppercase tracking-wider text-right">
-                  사육 두수
-                </th>
-                <th className="p-3 text-xs font-black text-slate-500 uppercase tracking-wider text-center">
-                  상태
-                </th>
-                <th className="p-3 text-xs font-black text-slate-500 uppercase tracking-wider">
-                  특이사항 / 경고
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {filteredTableData.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan="6"
-                    className="p-12 text-center text-slate-400 font-medium"
-                  >
-                    검색 및 필터 조건에 맞는 케이지가 없습니다.
-                  </td>
-                </tr>
+            <div className="overflow-x-auto hide-scrollbar max-h-[600px] overflow-y-auto w-full relative bg-slate-50">
+              {!roomMatrixData || roomMatrixData.sortedDates.length === 0 ? (
+                <div className="p-12 text-center text-slate-400 font-bold">
+                  {activeTab} 에 기록된 사육 정보가 없습니다.
+                </div>
+              ) : roomMatrixData.columns.length === 0 ? (
+                <div className="p-12 text-center text-slate-400 font-bold">
+                  현재 진행 중인 활성 과제가 없습니다. (우측 상단 토글을 눌러
+                  과거 기록을 확인하세요)
+                </div>
               ) : (
-                filteredTableData.map((row, idx) => (
-                  <tr
-                    key={idx}
-                    className="hover:bg-slate-50 transition-colors print:break-inside-avoid"
-                  >
-                    <td className="p-3 whitespace-nowrap">
-                      <div className="text-[10px] font-bold text-slate-400 mb-0.5">
-                        {row.date}
-                      </div>
-                      <span className="font-bold text-sm text-slate-700">
-                        {row.rackId}동 {row.cageId}
-                      </span>
-                      {activeTab === '전체' && (
-                        <div className="text-[10px] font-bold text-indigo-500 mt-0.5">
-                          {row.roomName}
-                        </div>
-                      )}
-                    </td>
-                    <td className="p-3">
-                      <div className="text-[10px] text-indigo-500 font-bold mb-0.5">
-                        {row.projectId}
-                      </div>
-                      <div className="font-bold text-sm text-slate-800">
-                        {row.pi}{' '}
-                        <span className="font-medium text-slate-500 text-xs ml-1">
-                          | {row.affiliation}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="p-3">
-                      <div className="flex flex-wrap gap-1 mb-1">
-                        {row.strain.split(',').map((s) => (
-                          <span
-                            key={s}
-                            className="bg-slate-100 text-slate-600 text-[10px] font-bold px-1.5 py-0.5 rounded"
-                          >
-                            {s.trim()}
-                          </span>
-                        ))}
-                      </div>
-                      {row.strainDetail && (
-                        <div className="text-[10px] text-slate-500 truncate max-w-[150px]">
-                          {row.strainDetail}
-                        </div>
-                      )}
-                    </td>
-                    <td className="p-3 text-right">
-                      <span className="font-black text-lg text-slate-800">
-                        {row.animalCount}
-                      </span>
-                    </td>
-                    <td className="p-3 text-center">
-                      {row.status === '정상' ? (
-                        <span className="text-xs font-bold text-slate-400">
-                          정상
-                        </span>
-                      ) : (
-                        <span
-                          className={`text-[10px] font-black px-2 py-1 rounded-md ${
-                            row.status === '반입'
-                              ? 'bg-blue-100 text-blue-700'
-                              : row.status === '반출'
-                              ? 'bg-rose-100 text-rose-700'
-                              : row.status === '이동'
-                              ? 'bg-purple-100 text-purple-700'
-                              : 'bg-amber-100 text-amber-700'
+                <table className="text-xs text-center matrix-table w-max bg-white">
+                  <thead className="bg-slate-100 text-slate-600 font-bold tracking-tight">
+                    {/* 행 1: 학과 */}
+                    <tr>
+                      <th className="p-2 sticky-col-1 bg-slate-200 shadow-[1px_0_0_#cbd5e1] w-24"></th>
+                      <th className="p-2 sticky-col-2 w-14 text-[10px]"></th>
+                      <th className="p-2 sticky-col-3 shadow-[1px_0_0_#cbd5e1] w-14 text-[10px]"></th>
+                      {roomMatrixData.columns.map((col, i) => (
+                        <th
+                          key={i}
+                          colSpan="2"
+                          className={`p-2 whitespace-nowrap border-b-0 border-l border-r border-slate-200 ${
+                            col.isActive
+                              ? 'bg-indigo-50/50 text-indigo-900'
+                              : 'bg-slate-200 text-slate-500'
                           }`}
                         >
-                          {row.status}
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-3 max-w-[200px]">
-                      {row.warnings && (
-                        <div className="text-[10px] font-bold text-red-600 mb-1 flex items-center gap-1">
-                          <AlertCircle className="w-3 h-3" />
-                          {row.warnings}
-                        </div>
-                      )}
-                      {row.note && (
-                        <div
-                          className="text-[10px] text-slate-600 bg-slate-100 p-1.5 rounded truncate"
-                          title={row.note}
+                          {col.affiliation}
+                        </th>
+                      ))}
+                    </tr>
+                    {/* 행 2: 연구책임자 */}
+                    <tr>
+                      <th className="p-2 sticky-col-1 bg-slate-200 shadow-[1px_0_0_#cbd5e1]"></th>
+                      <th className="p-2 sticky-col-2 text-[10px]"></th>
+                      <th className="p-2 sticky-col-3 shadow-[1px_0_0_#cbd5e1] text-[10px]"></th>
+                      {roomMatrixData.columns.map((col, i) => (
+                        <th
+                          key={i}
+                          colSpan="2"
+                          className={`p-2 whitespace-nowrap font-black text-sm border-t-0 border-b-0 border-l border-r border-slate-200 ${
+                            col.isActive
+                              ? 'text-slate-800 bg-indigo-50/30'
+                              : 'text-slate-500 bg-slate-100'
+                          }`}
                         >
-                          {row.note}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))
+                          {col.pi} {col.isActive ? '' : '(종료)'}
+                        </th>
+                      ))}
+                    </tr>
+                    {/* 행 3: 승인번호 */}
+                    <tr>
+                      <th className="p-2 sticky-col-1 bg-slate-200 shadow-[1px_0_0_#cbd5e1]"></th>
+                      <th className="p-2 sticky-col-2 font-black text-slate-700 text-[10px]">
+                        전체합계
+                      </th>
+                      <th className="p-2 sticky-col-3 font-black text-slate-700 text-[10px] shadow-[1px_0_0_#cbd5e1]">
+                        전체합계
+                      </th>
+                      {roomMatrixData.columns.map((col, i) => (
+                        <th
+                          key={i}
+                          colSpan="2"
+                          className={`p-2 whitespace-nowrap text-[10px] border-t-0 border-b border-l border-r border-slate-200 ${
+                            col.isActive
+                              ? 'text-slate-500 bg-white'
+                              : 'text-slate-400 bg-slate-50'
+                          }`}
+                        >
+                          {col.projectId}
+                        </th>
+                      ))}
+                    </tr>
+                    {/* 행 4: 동물계통 + 상세정보(LMO 등) */}
+                    <tr>
+                      <th className="p-2 sticky-col-1 bg-slate-200 shadow-[1px_0_0_#cbd5e1]"></th>
+                      <th className="p-2 sticky-col-2"></th>
+                      <th className="p-2 sticky-col-3 shadow-[1px_0_0_#cbd5e1]"></th>
+                      {roomMatrixData.columns.map((col, i) => (
+                        <th
+                          key={i}
+                          colSpan="2"
+                          className={`p-2 whitespace-nowrap text-[11px] font-bold border-b-0 ${
+                            col.isActive
+                              ? 'text-slate-700 bg-white'
+                              : 'text-slate-400 bg-slate-50'
+                          }`}
+                        >
+                          {col.strain}
+                          {col.strainDetail && (
+                            <span
+                              className={`block mt-0.5 text-[9px] font-black rounded px-1 ${
+                                col.isActive
+                                  ? 'text-rose-500 bg-rose-50'
+                                  : 'text-slate-400 bg-slate-200'
+                              }`}
+                            >
+                              {col.strainDetail}
+                            </span>
+                          )}
+                        </th>
+                      ))}
+                    </tr>
+                    {/* 행 5: 사육대 */}
+                    <tr>
+                      <th className="p-2 sticky-col-1 bg-slate-200 shadow-[1px_0_0_#cbd5e1] text-[11px]">
+                        일자 (날짜)
+                      </th>
+                      <th className="p-2 sticky-col-2 text-[10px]">케이지</th>
+                      <th className="p-2 sticky-col-3 shadow-[1px_0_0_#cbd5e1] text-[10px]">
+                        마릿수
+                      </th>
+                      {roomMatrixData.columns.map((col, i) => (
+                        <th
+                          key={i}
+                          colSpan="2"
+                          className={`p-2 whitespace-nowrap text-xs font-black ${
+                            col.isActive
+                              ? 'text-emerald-700 bg-emerald-50/50'
+                              : 'text-slate-500 bg-slate-200'
+                          }`}
+                        >
+                          {col.rackId}동
+                        </th>
+                      ))}
+                    </tr>
+                    {/* 행 6: 케이지/두수 분할 */}
+                    <tr className="bg-slate-200">
+                      <th className="p-1 sticky-col-1 shadow-[1px_0_0_#cbd5e1]"></th>
+                      <th className="p-1 sticky-col-2"></th>
+                      <th className="p-1 sticky-col-3 shadow-[1px_0_0_#cbd5e1]"></th>
+                      {roomMatrixData.columns.map((_, i) => (
+                        <React.Fragment key={i}>
+                          <th className="p-1 w-10 text-[9px] font-medium text-slate-500 bg-slate-100">
+                            케이지
+                          </th>
+                          <th className="p-1 w-10 text-[9px] font-medium text-slate-500 bg-slate-100 border-r border-slate-300">
+                            두수
+                          </th>
+                        </React.Fragment>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white">
+                    {roomMatrixData.sortedDates.map((date, rIdx) => {
+                      const rowData = roomMatrixData.roomSummary[date];
+                      return (
+                        <tr
+                          key={date}
+                          className="hover:bg-indigo-50/30 transition-colors border-b border-slate-100"
+                        >
+                          <td className="p-2 sticky-col-1 font-bold text-slate-700 shadow-[1px_0_0_#cbd5e1] whitespace-nowrap text-[11px]">
+                            {date.replace(/-/g, '. ')}
+                          </td>
+                          <td className="p-2 sticky-col-2 font-black text-slate-800 bg-amber-50/30 text-[11px]">
+                            {rowData.totalCages.toLocaleString()}
+                          </td>
+                          <td className="p-2 sticky-col-3 font-black text-slate-800 bg-emerald-50/30 shadow-[1px_0_0_#cbd5e1] text-[11px]">
+                            {rowData.totalHeads.toLocaleString()}
+                          </td>
+                          {roomMatrixData.colKeys.map((colKey, cIdx) => {
+                            const cell = rowData.values[colKey];
+                            const hasData = cell && cell.cages > 0;
+                            const isActiveCol =
+                              roomMatrixData.columns[cIdx].isActive;
+
+                            return (
+                              <React.Fragment key={cIdx}>
+                                <td
+                                  className={`p-2 ${
+                                    hasData
+                                      ? 'font-bold text-slate-700'
+                                      : 'text-slate-200'
+                                  } border-l text-[11px] ${
+                                    isActiveCol ? 'bg-white' : 'bg-slate-50'
+                                  }`}
+                                >
+                                  {hasData ? cell.cages.toLocaleString() : '-'}
+                                </td>
+                                <td
+                                  className={`p-2 ${
+                                    hasData
+                                      ? 'font-bold text-slate-700'
+                                      : 'text-slate-200'
+                                  } border-r border-slate-200 text-[11px] ${
+                                    hasData && isActiveCol
+                                      ? 'bg-slate-50/50'
+                                      : !isActiveCol
+                                      ? 'bg-slate-100'
+                                      : ''
+                                  }`}
+                                >
+                                  {hasData ? cell.heads.toLocaleString() : '-'}
+                                </td>
+                              </React.Fragment>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               )}
-            </tbody>
-          </table>
+            </div>
+          </div>
+
+          {/* --- 최근 60일 리스트 뷰 (하단) --- */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden animate-in fade-in">
+            <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col gap-3">
+              <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
+                <div>
+                  <h2 className="text-lg font-black text-slate-800">
+                    {activeTab} 케이지별 상세 리스트 (최근 60일)
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-1">
+                    위 매트릭스는 무한대로 표시되지만, 상세 리스트는 서버
+                    최적화를 위해 최근 60일 내역만 제공됩니다.
+                  </p>
+                </div>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 w-full xl:w-auto">
+                  {/* 날짜 필터 달력 */}
+                  <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-md px-1.5 py-1 shadow-sm w-full sm:w-auto">
+                    <CalendarDays className="w-3.5 h-3.5 text-slate-400 ml-1" />
+                    <input
+                      type="date"
+                      value={tableStartDate}
+                      onChange={(e) => setTableStartDate(e.target.value)}
+                      min={formatDate(sixtyDaysAgo)}
+                      className="text-xs p-1 focus:outline-none text-slate-600 font-bold bg-transparent"
+                    />
+                    <span className="text-slate-300 font-bold">~</span>
+                    <input
+                      type="date"
+                      value={tableEndDate}
+                      onChange={(e) => setTableEndDate(e.target.value)}
+                      className="text-xs p-1 focus:outline-none text-slate-600 font-bold bg-transparent"
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2 items-center bg-white p-2 rounded-lg border border-slate-100 shadow-sm">
+                <span className="text-xs font-black text-slate-400 mr-1 flex items-center gap-1">
+                  <Filter className="w-3.5 h-3.5" /> 필터
+                </span>
+                <select
+                  value={filterPI}
+                  onChange={(e) => setFilterPI(e.target.value)}
+                  className="text-xs border border-slate-200 rounded-md px-2 py-1.5 font-bold text-slate-600 bg-slate-50"
+                >
+                  <option value="전체">연구책임자: 전체</option>
+                  {filterOptions.pis.map((pi) => (
+                    <option key={pi} value={pi}>
+                      {pi}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={filterProject}
+                  onChange={(e) => setFilterProject(e.target.value)}
+                  className="text-xs border border-slate-200 rounded-md px-2 py-1.5 font-bold text-slate-600 bg-slate-50"
+                >
+                  <option value="전체">과제번호: 전체</option>
+                  {filterOptions.projects.map((p) => (
+                    <option key={p} value={p}>
+                      {p}
+                    </option>
+                  ))}
+                </select>
+                {(filterPI !== '전체' ||
+                  filterProject !== '전체' ||
+                  tableStartDate !== '' ||
+                  tableEndDate !== '') && (
+                  <button
+                    onClick={() => {
+                      setFilterPI('전체');
+                      setFilterProject('전체');
+                      setTableStartDate('');
+                      setTableEndDate('');
+                    }}
+                    className="text-[10px] font-bold text-slate-400 hover:text-red-500 underline ml-2"
+                  >
+                    조건 초기화
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="overflow-x-auto min-h-[300px]">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-white border-b-2 border-slate-100">
+                    <th className="p-3 text-xs font-black text-slate-500">
+                      일자 / 위치
+                    </th>
+                    <th className="p-3 text-xs font-black text-slate-500">
+                      과제번호 (PI / 학과)
+                    </th>
+                    <th className="p-3 text-xs font-black text-slate-500">
+                      품종 / 계통
+                    </th>
+                    <th className="p-3 text-xs font-black text-slate-500 text-right">
+                      사육 두수
+                    </th>
+                    <th className="p-3 text-xs font-black text-slate-500 text-center">
+                      상태
+                    </th>
+                    <th className="p-3 text-xs font-black text-slate-500">
+                      특이사항
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredTableData.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan="6"
+                        className="p-12 text-center text-slate-400 font-medium"
+                      >
+                        검색 조건에 맞는 60일 내 케이지 기록이 없습니다.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredTableData.map((row, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50">
+                        <td className="p-3 whitespace-nowrap">
+                          <div className="text-[10px] font-bold text-slate-400 mb-0.5">
+                            {row.date}
+                          </div>
+                          <span className="font-bold text-sm text-slate-700">
+                            {row.rackId}동 {row.cageId}
+                          </span>
+                        </td>
+                        <td className="p-3">
+                          <div className="text-[10px] text-indigo-500 font-bold mb-0.5">
+                            {row.projectId}
+                          </div>
+                          <div className="font-bold text-sm text-slate-800">
+                            {row.pi}
+                          </div>
+                        </td>
+                        <td className="p-3">
+                          <span className="bg-slate-100 text-slate-600 text-[10px] font-bold px-1.5 py-0.5 rounded">
+                            {row.strain}
+                          </span>
+                          {row.strainDetail && (
+                            <div className="text-[10px] text-rose-500 font-bold mt-1">
+                              {row.strainDetail}
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-3 text-right">
+                          <span className="font-black text-lg text-slate-800">
+                            {row.animalCount}
+                          </span>
+                        </td>
+                        <td className="p-3 text-center">
+                          <span className="text-[10px] font-black px-2 py-1 rounded-md bg-slate-100 text-slate-600">
+                            {row.status}
+                          </span>
+                        </td>
+                        <td className="p-3 max-w-[200px]">
+                          {row.warnings && (
+                            <div className="text-[10px] font-bold text-red-600 mb-1 flex items-center gap-1">
+                              <AlertCircle className="w-3 h-3" />
+                              {row.warnings}
+                            </div>
+                          )}
+                          {row.note && (
+                            <div
+                              className="text-[10px] text-slate-600 bg-slate-100 p-1.5 rounded truncate"
+                              title={row.note}
+                            >
+                              {row.note}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
