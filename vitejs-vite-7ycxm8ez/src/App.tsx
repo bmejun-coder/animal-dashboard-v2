@@ -6,6 +6,7 @@ import { Activity, RefreshCw, AlertCircle, Search, Filter, CalendarDays, CheckCi
 const DASHBOARD_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby03SJbc10FOwewYt8sVXB1xqK-HXatSgySDj14Hyyt4CBL4afEef3BSlXhDSrGSyi6/exec';
 
 const TABS = ['전체', 'Mouse-1', 'Mouse-2', 'Rat', '중동물', '격리사육실', '격리실험실'];
+const APP_VERSION = "6.4"; // 앱 버전 표기용 상수
 
 // 날짜 포맷 함수 (YYYY-MM-DD)
 const formatDate = (dateObj) => {
@@ -13,6 +14,8 @@ const formatDate = (dateObj) => {
 };
 
 export default function Dashboard() {
+  const todayStr = useMemo(() => formatDate(new Date()), []);
+
   const [activeTab, setActiveTab] = useState('전체');
   const [dashboardData, setDashboardData] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -22,24 +25,20 @@ export default function Dashboard() {
   // 사육실별 일자별 추이 패널 토글 상태
   const [showRoomTrend, setShowRoomTrend] = useState(false);
 
-  // 상세 데이터 테이블 다중 필터 상태
+  // [수정됨] 상세 데이터 테이블 다중 필터 상태 - 기본값을 '오늘'로 설정
   const [filterSpecies, setFilterSpecies] = useState('전체');
   const [filterPI, setFilterPI] = useState('전체');
   const [filterProject, setFilterProject] = useState('전체');
-  const [tableStartDate, setTableStartDate] = useState('');
-  const [tableEndDate, setTableEndDate] = useState('');
+  const [tableStartDate, setTableStartDate] = useState(todayStr);
+  const [tableEndDate, setTableEndDate] = useState(todayStr);
 
-  // 통합 변동 내역 필터 상태 (디폴트: 최근 30일 ~ 오늘)
-  const today = new Date();
-  const thirtyDaysAgo = new Date(today);
-  thirtyDaysAgo.setDate(today.getDate() - 30);
-  
-  const [eventStartDate, setEventStartDate] = useState(formatDate(thirtyDaysAgo));
-  const [eventEndDate, setEventEndDate] = useState(formatDate(today));
+  // [수정됨] 통합 변동 내역 필터 상태 - 기본값을 '오늘'로 설정
+  const [eventStartDate, setEventStartDate] = useState(todayStr);
+  const [eventEndDate, setEventEndDate] = useState(todayStr);
   const [eventSearch, setEventSearch] = useState('');
   const [eventTypeFilter, setEventTypeFilter] = useState('전체');
 
-  // 데이터 로드 함수 (새로운 대시보드 전용 URL 호출)
+  // 데이터 로드 함수
   const fetchDashboardData = async () => {
     if (DASHBOARD_SCRIPT_URL.includes('여기에_새로_발급받은')) {
       alert("코드 상단의 DASHBOARD_SCRIPT_URL 에 대시보드 전용 서버 주소를 넣어야 작동합니다!");
@@ -48,11 +47,9 @@ export default function Dashboard() {
 
     setIsLoading(true);
     try {
-      // [수정됨] 대시보드 전용 데이터를 요청하기 위해 '?type=dashboard' 쿼리 파라미터 추가
       const response = await fetch(DASHBOARD_SCRIPT_URL + '?type=dashboard');
       const serverResponse = await response.json();
       
-      // 서버에서 보내주는 새 포맷({ version: "6.3", data: [...] })에 맞춰 세팅
       if (serverResponse.data) {
         setDashboardData(serverResponse.data);
         const now = new Date();
@@ -83,7 +80,6 @@ export default function Dashboard() {
 
     if (dashboardData.length === 0) return s;
 
-    // 1. 사육실별 최신 날짜 파악 (메인 KPI 카드에는 가장 최신 현황만 보여주기 위함)
     const latestDatePerRoom = {};
     dashboardData.forEach(item => {
       if (!latestDatePerRoom[item.roomName] || item.date > latestDatePerRoom[item.roomName]) {
@@ -91,7 +87,6 @@ export default function Dashboard() {
       }
     });
 
-    // 추이(Trend) 계산을 위한 날짜별 집계 객체
     const trendMap = {};
 
     dashboardData.forEach(item => {
@@ -102,7 +97,6 @@ export default function Dashboard() {
       const isRat = item.roomName.includes('Rat') || item.strain.includes('Rat');
       const isRabbit = item.roomName.includes('중동물') || item.strain.includes('Rabbit');
 
-      // --- [추이 데이터] 전체 날짜를 누적 ---
       if (!trendMap[item.date]) {
           trendMap[item.date] = { mouse: { heads: 0, cages: 0 }, rat: { heads: 0, cages: 0 }, rabbit: { heads: 0, cages: 0 } };
       }
@@ -110,7 +104,6 @@ export default function Dashboard() {
       else if (isRat) { trendMap[item.date].rat.heads += count; trendMap[item.date].rat.cages += 1; }
       else if (isRabbit) { trendMap[item.date].rabbit.heads += count; trendMap[item.date].rabbit.cages += 1; }
 
-      // --- [특이사항 및 변동 내역] 전체 날짜에서 추출 ---
       const loc = `${item.roomName} ${item.rackId}동 ${item.cageId}`;
       if (item.warnings) s.realEvents.push({ date: item.date, location: loc, pi: item.pi, type: '경고', content: item.warnings, color: 'text-red-700 bg-red-100 border-red-200' });
       if (item.note) s.realEvents.push({ date: item.date, location: loc, pi: item.pi, type: '메모', content: item.note, color: 'text-slate-700 bg-slate-100 border-slate-200' });
@@ -123,7 +116,6 @@ export default function Dashboard() {
         s.realEvents.push({ date: item.date, location: loc, pi: item.pi, type: '상태', content: item.status, color: col });
       }
 
-      // --- [메인 KPI] 각 사육실의 가장 '최신' 날짜 데이터만 카드에 표시 ---
       if (item.date === latestDatePerRoom[item.roomName]) {
         s.activeProjects.add(item.projectId);
         if (isMouse) { s.mouse.heads += count; s.mouse.cages += 1; }
@@ -132,7 +124,6 @@ export default function Dashboard() {
       }
     });
 
-    // 집계된 전체 추이 데이터를 날짜 최신순으로 정렬 (최대 14일치만 표출)
     const trendDates = Object.keys(trendMap).sort((a, b) => new Date(b) - new Date(a)).slice(0, 14);
     s.todayTrend = trendDates.map(date => {
         const dObj = new Date(date);
@@ -169,7 +160,6 @@ export default function Dashboard() {
     return allEvents.sort((a, b) => new Date(b.date) - new Date(a.date));
   }, [stats.realEvents, eventStartDate, eventEndDate, eventTypeFilter, eventSearch]);
 
-
   // 드롭다운 필터 옵션 추출 로직
   const filterOptions = useMemo(() => {
     const pis = new Set();
@@ -191,11 +181,10 @@ export default function Dashboard() {
     };
   }, [dashboardData, activeTab]);
 
-  // 2. [핵심] 탭별 사육실 매트릭스 데이터 변환 로직 (엑셀 완벽 구현)
+  // 탭별 사육실 매트릭스 데이터 변환 로직
   const roomMatrixData = useMemo(() => {
     if (activeTab === '전체' || dashboardData.length === 0) return null;
 
-    // 현재 선택된 탭(사육실)의 데이터만 필터링
     const roomData = dashboardData.filter(item => item.roomName.includes(activeTab) && item.projectId && item.projectId !== 'NONE');
     if (roomData.length === 0) return { columns: [], colKeys: [], rowMap: new Map(), sortedDates: [] };
 
@@ -203,7 +192,6 @@ export default function Dashboard() {
     const rowMap = new Map();
 
     roomData.forEach(item => {
-      // 열(Column) 구분 기준: 학과 + PI + 과제번호 + 동물계통 + 상세계통 + 사육대(Rack)
       const colKey = `${item.affiliation}_${item.pi}_${item.projectId}_${item.strain}_${item.strainDetail}_${item.rackId}`;
       
       if (!colsMap.has(colKey)) {
@@ -212,12 +200,11 @@ export default function Dashboard() {
           pi: item.pi || '-',
           projectId: item.projectId || '-',
           strain: item.strain || '-',
-          strainDetail: item.strainDetail || '', // LMO 등 상세계통 추가
-          rackId: item.rackId // A1, A2 등 사육대
+          strainDetail: item.strainDetail || '',
+          rackId: item.rackId
         });
       }
 
-      // 날짜별 데이터 행(Row) 집계
       if (!rowMap.has(item.date)) {
         rowMap.set(item.date, { totalHeads: 0, totalCages: 0, values: {} });
       }
@@ -233,7 +220,6 @@ export default function Dashboard() {
       rData.totalCages += 1;
     });
 
-    // 열 정렬 (PI 오름차순 -> 학과 오름차순 -> 사육대 순서)
     const sortedColKeys = Array.from(colsMap.keys()).sort((a, b) => {
       const colA = colsMap.get(a);
       const colB = colsMap.get(b);
@@ -243,18 +229,15 @@ export default function Dashboard() {
     });
     
     const columns = sortedColKeys.map(key => colsMap.get(key));
-
-    // 날짜 정렬 (최신순)
     const sortedDates = Array.from(rowMap.keys()).sort((a, b) => new Date(b) - new Date(a));
 
     return { columns, colKeys: sortedColKeys, rowMap, sortedDates };
   }, [dashboardData, activeTab]);
 
-  // 다중 필터 적용 로직
+  // 다중 필터 적용 로직 (상세 테이블용)
   const { filteredTableData, roomStats } = useMemo(() => {
     if (dashboardData.length === 0) return { filteredTableData: [], roomStats: { heads: 0, cages: 0 } };
 
-    // 각 사육실별 최신 날짜를 파악
     const latestDatePerRoom = {};
     dashboardData.forEach(item => {
       if (!latestDatePerRoom[item.roomName] || item.date > latestDatePerRoom[item.roomName]) {
@@ -264,18 +247,18 @@ export default function Dashboard() {
 
     let data = dashboardData.filter(item => item.projectId && item.projectId !== 'NONE');
     
-    // 2. 날짜 필터 적용 (없으면 기본으로 최신 현황만 표시하여 표가 지저분해지는 것을 방지)
+    // 날짜 필터 (빈칸일 경우 시인성을 위해 무시하고 전체 표시를 허용, 기본값은 오늘 날짜로 세팅됨)
     if (tableStartDate || tableEndDate) {
       if (tableStartDate) data = data.filter(item => item.date && item.date >= tableStartDate);
       if (tableEndDate) data = data.filter(item => item.date && item.date <= tableEndDate);
     } else {
+      // 날짜 필터를 사용자가 강제로 비웠을 때만, 각 방의 가장 최신 스냅샷만 보여줌
       data = data.filter(item => item.date === latestDatePerRoom[item.roomName]);
     }
 
     let currentRoomHeads = 0;
     let currentRoomCages = 0;
 
-    // 1. 탭(사육실) 필터 적용 및 사육실 통계 산출
     if (activeTab !== '전체') {
       const roomData = data.filter(item => item.roomName.includes(activeTab));
       roomData.forEach(item => {
@@ -290,18 +273,15 @@ export default function Dashboard() {
       });
     }
 
-    // 3. 종별(Species) 필터 적용
     if (filterSpecies !== '전체') {
       if (filterSpecies === 'Mouse') data = data.filter(item => item.roomName.includes('Mouse') || item.strain.includes('mouse') || item.strain.includes('BALB') || item.strain.includes('C57') || item.strain.includes('ICR'));
       else if (filterSpecies === 'Rat') data = data.filter(item => item.roomName.includes('Rat') || item.strain.includes('Rat'));
       else if (filterSpecies === 'Rabbit') data = data.filter(item => item.roomName.includes('중동물') || item.strain.includes('Rabbit'));
     }
 
-    // 4. PI 및 과제번호 필터 적용
     if (filterPI !== '전체') data = data.filter(item => item.pi === filterPI);
     if (filterProject !== '전체') data = data.filter(item => item.projectId === filterProject);
 
-    // 5. 텍스트 검색어 필터 적용
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       data = data.filter(item => 
@@ -313,7 +293,6 @@ export default function Dashboard() {
       );
     }
     
-    // 리스트 정렬
     data.sort((a, b) => {
       if (a.rackId !== b.rackId) return a.rackId.localeCompare(b.rackId);
       return a.cageId.localeCompare(b.cageId);
@@ -322,7 +301,7 @@ export default function Dashboard() {
     return { filteredTableData: data, roomStats: { heads: currentRoomHeads, cages: currentRoomCages } };
   }, [dashboardData, activeTab, filterSpecies, filterPI, filterProject, tableStartDate, tableEndDate, searchQuery]);
 
-  // 사육실별 최근 14일 추이 데이터 세팅
+  // 사육실별 최근 14일 추이 데이터
   const roomTrendData = useMemo(() => {
     if (activeTab === '전체' || dashboardData.length === 0) return [];
     
@@ -365,7 +344,13 @@ export default function Dashboard() {
             <Activity className="w-6 h-6 text-white" />
           </div>
           <div>
-            <h1 className="text-xl md:text-2xl font-black text-slate-800 tracking-tight">통합 사육실 실시간 현황</h1>
+            <h1 className="text-xl md:text-2xl font-black text-slate-800 tracking-tight flex items-center">
+              통합 사육실 실시간 현황
+              {/* [수정됨] 버전 표기 추가 */}
+              <span className="text-[12px] font-bold text-indigo-600 bg-indigo-50 ml-3 border border-indigo-200 px-2.5 py-0.5 rounded-full align-middle print:text-slate-800 print:border-slate-800">
+                Ver {APP_VERSION}
+              </span>
+            </h1>
             <p className="text-xs md:text-sm text-slate-500 font-medium mt-1">Data Based On: <span className="font-bold text-indigo-600 ml-1 print:text-slate-800">{lastUpdated}</span></p>
           </div>
         </div>
@@ -410,8 +395,8 @@ export default function Dashboard() {
               setFilterSpecies('전체');
               setFilterPI('전체');
               setFilterProject('전체');
-              setTableStartDate('');
-              setTableEndDate('');
+              setTableStartDate(todayStr); // 탭 변경 시 날짜 필터 기본값(오늘)으로 리셋
+              setTableEndDate(todayStr);
               setShowRoomTrend(false);
             }}
             className={`px-5 py-2.5 rounded-xl font-bold text-sm whitespace-nowrap transition-all border-2 ${activeTab === tab ? 'bg-slate-800 text-white border-slate-800 shadow-md' : 'bg-white text-slate-500 border-transparent hover:border-slate-200 hover:text-slate-700 shadow-sm'}`}
@@ -555,6 +540,8 @@ export default function Dashboard() {
                   <h3 className="font-bold text-slate-800 flex items-center gap-2">
                     <Activity className="w-5 h-5 text-indigo-500" /> 통합 변동 내역 및 특이사항
                   </h3>
+                  {/* [수정됨] 안내 문구 변경 */}
+                  <p className="text-[10px] text-slate-500 mt-1">지정된 기간 내 현장에서 등록된 상태 태그 및 경고/메모가 표시됩니다. <span className="font-bold text-indigo-500">(기본 설정: 오늘)</span></p>
                 </div>
                 
                 <div className="flex flex-wrap gap-2 w-full sm:w-auto print:hidden">
@@ -738,8 +725,9 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* ---------------- Universal Data Table Block (Always visible) ---------------- */}
+      {/* ---------------- Universal Data Table Block (항상 하단에 노출) ---------------- */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden animate-in fade-in slide-in-from-bottom-2 print:shadow-none">
+        
         <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col gap-3 print:bg-transparent">
           <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4">
             <div>
@@ -747,6 +735,7 @@ export default function Dashboard() {
                 <h2 className="text-lg font-black text-slate-800">
                   {activeTab === '전체' ? '전체 통합 상세 데이터' : `${activeTab} 상세 데이터`}
                 </h2>
+                
                 {activeTab !== '전체' && (
                   <div className="flex items-center gap-2 bg-indigo-100/50 px-2.5 py-1 rounded-lg border border-indigo-200">
                     <span className="text-xs font-bold text-indigo-800">총 두수: {roomStats.heads.toLocaleString()}마리</span>
@@ -755,12 +744,14 @@ export default function Dashboard() {
                   </div>
                 )}
               </div>
+              {/* [수정됨] 안내 문구 변경 */}
               <p className="text-xs text-slate-500 font-medium mt-1">
-                현재 조건에 맞는 케이지 <span className="font-bold text-indigo-500">{filteredTableData.length}</span>개가 표시되고 있습니다.
+                현재 조건에 맞는 케이지 <span className="font-bold text-indigo-500">{filteredTableData.length}</span>개가 표시되고 있습니다. <span className="font-bold text-indigo-500">(기본 설정: 오늘 기록분)</span> 과거 데이터를 보려면 달력 기간을 조정해주세요.
               </p>
             </div>
             
             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 print:hidden w-full xl:w-auto">
+                
                 <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-md px-1.5 py-1 shadow-sm w-full sm:w-auto">
                   <CalendarDays className="w-3.5 h-3.5 text-slate-400 ml-1" />
                   <input 
@@ -825,14 +816,15 @@ export default function Dashboard() {
                 {filterOptions.projects.map(p => <option key={p} value={p}>{p}</option>)}
               </select>
 
-              {(filterSpecies !== '전체' || filterPI !== '전체' || filterProject !== '전체' || tableStartDate !== '' || tableEndDate !== '') && (
+              {/* [수정됨] 조건 초기화 버튼 노출 여부: 날짜가 '오늘'이 아니거나 다른 필터가 켜져있을 때만 등장 */}
+              {(filterSpecies !== '전체' || filterPI !== '전체' || filterProject !== '전체' || tableStartDate !== todayStr || tableEndDate !== todayStr) && (
                 <button 
                   onClick={() => { 
                     setFilterSpecies('전체'); 
                     setFilterPI('전체'); 
                     setFilterProject('전체'); 
-                    setTableStartDate('');
-                    setTableEndDate('');
+                    setTableStartDate(todayStr); // 초기화 시 다시 '오늘' 날짜로 복귀
+                    setTableEndDate(todayStr);
                   }} 
                   className="text-[10px] font-bold text-slate-400 hover:text-red-500 underline ml-2 transition-colors flex items-center gap-1"
                 >
@@ -850,7 +842,9 @@ export default function Dashboard() {
             <div className="flex gap-2 overflow-x-auto hide-scrollbar pb-2 min-w-max">
               {roomTrendData.map((d, i) => (
                 <div key={i} className={`flex flex-col items-center border rounded-xl p-3 min-w-[120px] bg-indigo-50 border-indigo-200 ring-1 ring-indigo-200 shadow-sm`}>
-                  <span className="text-xs font-bold mb-1.5 text-indigo-700">{d.displayDate}</span>
+                  <span className="text-xs font-bold mb-1.5 text-indigo-700">
+                    {d.displayDate}
+                  </span>
                   <div className="flex items-baseline gap-1">
                     <span className="text-lg font-black text-indigo-700">{d.heads.toLocaleString()}</span>
                     <span className="text-[10px] font-bold text-slate-400">마리</span>
@@ -883,7 +877,7 @@ export default function Dashboard() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filteredTableData.length === 0 ? (
-                <tr><td colSpan="6" className="p-12 text-center text-slate-400 font-medium">검색 및 필터 조건에 맞는 케이지가 없습니다.</td></tr>
+                <tr><td colSpan="6" className="p-12 text-center text-slate-400 font-medium">검색 및 필터 조건에 맞는 데이터가 없습니다. 날짜를 변경해 보세요.</td></tr>
               ) : (
                 filteredTableData.map((row, idx) => (
                   <tr key={idx} className="hover:bg-slate-50 transition-colors print:break-inside-avoid">
