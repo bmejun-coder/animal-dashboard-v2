@@ -1,12 +1,12 @@
 // @ts-nocheck
 import React, { useState, useEffect, useMemo } from 'react';
-import { Activity, RefreshCw, AlertCircle, Search, Filter, CalendarDays, CheckCircle2, Printer, BookOpen, MousePointer2, TrendingUp, TableProperties } from 'lucide-react';
+import { Activity, RefreshCw, AlertCircle, Search, Filter, CalendarDays, CheckCircle2, Printer, BookOpen, MousePointer2, TrendingUp, TableProperties, ToggleLeft, ToggleRight } from 'lucide-react';
 
 // [중요] 현장 입력 앱 URL이 아닌, '대시보드 전용 서버'에서 1단계에서 새로 발급받은 URL을 여기에 넣습니다.
 const DASHBOARD_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby03SJbc10FOwewYt8sVXB1xqK-HXatSgySDj14Hyyt4CBL4afEef3BSlXhDSrGSyi6/exec';
 
 const TABS = ['전체', 'Mouse-1', 'Mouse-2', 'Rat', '중동물', '격리사육실', '격리실험실'];
-const APP_VERSION = "6.4"; // 앱 버전 표기용 상수
+const APP_VERSION = "6.5"; // [수정됨] 버전 6.5 (종료 과제 토글 숨김 기능 추가)
 
 // 날짜 포맷 함수 (YYYY-MM-DD)
 const formatDate = (dateObj) => {
@@ -25,14 +25,17 @@ export default function Dashboard() {
   // 사육실별 일자별 추이 패널 토글 상태
   const [showRoomTrend, setShowRoomTrend] = useState(false);
 
-  // [수정됨] 상세 데이터 테이블 다중 필터 상태 - 기본값을 '오늘'로 설정
+  // [신규] 매트릭스 뷰에서 활성 과제만 볼지, 종료된 과거 과제도 포함할지 결정하는 토글 (기본값: 활성 과제만)
+  const [showActiveOnly, setShowActiveOnly] = useState(true);
+
+  // 상세 데이터 테이블 다중 필터 상태 (기본값: 오늘)
   const [filterSpecies, setFilterSpecies] = useState('전체');
   const [filterPI, setFilterPI] = useState('전체');
   const [filterProject, setFilterProject] = useState('전체');
   const [tableStartDate, setTableStartDate] = useState(todayStr);
   const [tableEndDate, setTableEndDate] = useState(todayStr);
 
-  // [수정됨] 통합 변동 내역 필터 상태 - 기본값을 '오늘'로 설정
+  // 통합 변동 내역 필터 상태 (기본값: 오늘)
   const [eventStartDate, setEventStartDate] = useState(todayStr);
   const [eventEndDate, setEventEndDate] = useState(todayStr);
   const [eventSearch, setEventSearch] = useState('');
@@ -181,7 +184,7 @@ export default function Dashboard() {
     };
   }, [dashboardData, activeTab]);
 
-  // 탭별 사육실 매트릭스 데이터 변환 로직
+  // [핵심 변경] 탭별 사육실 매트릭스 데이터 변환 로직 (활성/종료 자동 판별)
   const roomMatrixData = useMemo(() => {
     if (activeTab === '전체' || dashboardData.length === 0) return null;
 
@@ -201,7 +204,8 @@ export default function Dashboard() {
           projectId: item.projectId || '-',
           strain: item.strain || '-',
           strainDetail: item.strainDetail || '',
-          rackId: item.rackId
+          rackId: item.rackId,
+          isActive: false // 초기값, 아래에서 판별
         });
       }
 
@@ -220,6 +224,20 @@ export default function Dashboard() {
       rData.totalCages += 1;
     });
 
+    // 1. 날짜 정렬 (최신순)
+    const sortedDates = Array.from(rowMap.keys()).sort((a, b) => new Date(b) - new Date(a));
+    const latestDate = sortedDates.length > 0 ? sortedDates[0] : null;
+
+    // 2. 활성/종료 여부 자동 판별 (가장 최신 날짜에 동물이 남아있는가?)
+    if (latestDate) {
+      const latestRowData = rowMap.get(latestDate);
+      colsMap.forEach((col, key) => {
+        const cagesOnLatestDate = latestRowData.values[key]?.cages || 0;
+        col.isActive = cagesOnLatestDate > 0;
+      });
+    }
+
+    // 3. 열 정렬 (PI 오름차순 -> 학과 오름차순 -> 사육대 순서)
     const sortedColKeys = Array.from(colsMap.keys()).sort((a, b) => {
       const colA = colsMap.get(a);
       const colB = colsMap.get(b);
@@ -228,11 +246,16 @@ export default function Dashboard() {
       return colA.rackId.localeCompare(colB.rackId);
     });
     
-    const columns = sortedColKeys.map(key => colsMap.get(key));
-    const sortedDates = Array.from(rowMap.keys()).sort((a, b) => new Date(b) - new Date(a));
+    // 4. [신규] '활성 과제만 보기' 토글에 따른 필터링 적용
+    const visibleColKeys = sortedColKeys.filter(key => {
+      if (showActiveOnly) return colsMap.get(key).isActive;
+      return true; // 포함하기 옵션일 경우 종료된 과제도 전부 출력
+    });
 
-    return { columns, colKeys: sortedColKeys, rowMap, sortedDates };
-  }, [dashboardData, activeTab]);
+    const columns = visibleColKeys.map(key => colsMap.get(key));
+
+    return { columns, colKeys: visibleColKeys, rowMap, sortedDates };
+  }, [dashboardData, activeTab, showActiveOnly]);
 
   // 다중 필터 적용 로직 (상세 테이블용)
   const { filteredTableData, roomStats } = useMemo(() => {
@@ -247,12 +270,10 @@ export default function Dashboard() {
 
     let data = dashboardData.filter(item => item.projectId && item.projectId !== 'NONE');
     
-    // 날짜 필터 (빈칸일 경우 시인성을 위해 무시하고 전체 표시를 허용, 기본값은 오늘 날짜로 세팅됨)
     if (tableStartDate || tableEndDate) {
       if (tableStartDate) data = data.filter(item => item.date && item.date >= tableStartDate);
       if (tableEndDate) data = data.filter(item => item.date && item.date <= tableEndDate);
     } else {
-      // 날짜 필터를 사용자가 강제로 비웠을 때만, 각 방의 가장 최신 스냅샷만 보여줌
       data = data.filter(item => item.date === latestDatePerRoom[item.roomName]);
     }
 
@@ -346,7 +367,6 @@ export default function Dashboard() {
           <div>
             <h1 className="text-xl md:text-2xl font-black text-slate-800 tracking-tight flex items-center">
               통합 사육실 실시간 현황
-              {/* [수정됨] 버전 표기 추가 */}
               <span className="text-[12px] font-bold text-indigo-600 bg-indigo-50 ml-3 border border-indigo-200 px-2.5 py-0.5 rounded-full align-middle print:text-slate-800 print:border-slate-800">
                 Ver {APP_VERSION}
               </span>
@@ -398,6 +418,7 @@ export default function Dashboard() {
               setTableStartDate(todayStr); // 탭 변경 시 날짜 필터 기본값(오늘)으로 리셋
               setTableEndDate(todayStr);
               setShowRoomTrend(false);
+              setShowActiveOnly(true); // 탭 이동 시 기본적으로 활성 과제만 표시하도록 리셋
             }}
             className={`px-5 py-2.5 rounded-xl font-bold text-sm whitespace-nowrap transition-all border-2 ${activeTab === tab ? 'bg-slate-800 text-white border-slate-800 shadow-md' : 'bg-white text-slate-500 border-transparent hover:border-slate-200 hover:text-slate-700 shadow-sm'}`}
           >
@@ -540,7 +561,6 @@ export default function Dashboard() {
                   <h3 className="font-bold text-slate-800 flex items-center gap-2">
                     <Activity className="w-5 h-5 text-indigo-500" /> 통합 변동 내역 및 특이사항
                   </h3>
-                  {/* [수정됨] 안내 문구 변경 */}
                   <p className="text-[10px] text-slate-500 mt-1">지정된 기간 내 현장에서 등록된 상태 태그 및 경고/메모가 표시됩니다. <span className="font-bold text-indigo-500">(기본 설정: 오늘)</span></p>
                 </div>
                 
@@ -583,7 +603,7 @@ export default function Dashboard() {
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {filteredEvents.length === 0 ? (
-                      <tr><td colSpan="4" className="p-10 text-center text-slate-400 font-medium">검색 조건에 맞는 특이사항이나 변동 내역이 없습니다.</td></tr>
+                      <tr><td colSpan="4" className="p-10 text-center text-slate-400 font-medium">선택된 날짜({eventStartDate} ~ {eventEndDate})에 특이사항이나 변동 내역이 없습니다.</td></tr>
                     ) : (
                       filteredEvents.map((ev, idx) => (
                         <tr key={idx} className="hover:bg-slate-50 transition-colors print:break-inside-avoid">
@@ -614,18 +634,31 @@ export default function Dashboard() {
         <div className="space-y-6">
           {/* --- 매트릭스 뷰 (상단) --- */}
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden animate-in fade-in slide-in-from-bottom-2 flex flex-col">
-            <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+            <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div>
                 <h2 className="text-lg font-black text-indigo-800 flex items-center gap-2">
                   <TableProperties className="w-5 h-5" /> {activeTab} 일일 동물 현황 (Matrix)
                 </h2>
-                <p className="text-xs text-slate-500 mt-1">엑셀 형태의 크로스탭 뷰입니다. 스크롤을 우측으로 넘겨도 날짜와 총합은 고정되어 표시됩니다.</p>
+                <p className="text-[10px] text-slate-500 mt-1">엑셀 형태의 크로스탭 뷰입니다. 스크롤을 우측으로 넘겨도 날짜와 총합은 고정되어 표시됩니다.</p>
               </div>
+              
+              {/* [신규] 활성/종료 과제 토글 버튼 */}
+              <button 
+                onClick={() => setShowActiveOnly(!showActiveOnly)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-all ${showActiveOnly ? 'bg-indigo-50 border-indigo-200 text-indigo-700 shadow-sm' : 'bg-slate-100 border-slate-300 text-slate-500'}`}
+              >
+                {showActiveOnly ? <ToggleRight className="w-5 h-5 text-indigo-600" /> : <ToggleLeft className="w-5 h-5 text-slate-400" />}
+                <span className="text-xs font-bold">{showActiveOnly ? '현재 활성화된 과제만 보기' : '종료(과거) 과제 포함하여 전체 보기'}</span>
+              </button>
             </div>
 
             <div className="overflow-x-auto hide-scrollbar max-h-[600px] overflow-y-auto w-full relative bg-slate-50">
-              {!roomMatrixData || roomMatrixData.sortedDates.length === 0 ? (
-                <div className="p-12 text-center text-slate-400 font-bold">{activeTab} 에 기록된 사육 정보가 없습니다.</div>
+              {!roomMatrixData || roomMatrixData.columns.length === 0 ? (
+                <div className="p-12 text-center text-slate-400 font-bold">
+                  {showActiveOnly 
+                    ? "현재 진행 중인 활성 과제가 없습니다. (우측 상단 토글을 눌러 과거 기록을 확인하세요)" 
+                    : `${activeTab} 에 기록된 사육 정보가 없습니다.`}
+                </div>
               ) : (
                 <table className="text-xs text-center matrix-table w-max bg-white">
                   <thead className="bg-slate-100 text-slate-600 font-bold tracking-tight">
@@ -634,7 +667,9 @@ export default function Dashboard() {
                       <th className="p-2 sticky-col-2 w-14 text-[10px]"></th>
                       <th className="p-2 sticky-col-3 shadow-[1px_0_0_#cbd5e1] w-14 text-[10px]"></th>
                       {roomMatrixData.columns.map((col, i) => (
-                        <th key={i} colSpan="2" className="p-2 whitespace-nowrap bg-indigo-50/50 text-indigo-900 border-b-0 border-l border-r border-slate-200">{col.affiliation}</th>
+                        <th key={i} colSpan="2" className={`p-2 whitespace-nowrap border-b-0 border-l border-r border-slate-200 ${col.isActive ? 'bg-indigo-50/50 text-indigo-900' : 'bg-slate-100 text-slate-400'}`}>
+                          {col.affiliation}
+                        </th>
                       ))}
                     </tr>
                     <tr>
@@ -642,7 +677,9 @@ export default function Dashboard() {
                       <th className="p-2 sticky-col-2 text-[10px]"></th>
                       <th className="p-2 sticky-col-3 shadow-[1px_0_0_#cbd5e1] text-[10px]"></th>
                       {roomMatrixData.columns.map((col, i) => (
-                        <th key={i} colSpan="2" className="p-2 whitespace-nowrap font-black text-sm text-slate-800 bg-indigo-50/30 border-t-0 border-b-0 border-l border-r border-slate-200">{col.pi}</th>
+                        <th key={i} colSpan="2" className={`p-2 whitespace-nowrap font-black text-sm border-t-0 border-b-0 border-l border-r border-slate-200 ${col.isActive ? 'text-slate-800 bg-indigo-50/30' : 'text-slate-400 bg-slate-50'}`}>
+                          {col.pi} {col.isActive ? '' : <span className="text-[10px] font-medium text-rose-400">(종료)</span>}
+                        </th>
                       ))}
                     </tr>
                     <tr>
@@ -650,7 +687,9 @@ export default function Dashboard() {
                       <th className="p-2 sticky-col-2 font-black text-slate-700 text-[10px]">전체합계</th>
                       <th className="p-2 sticky-col-3 font-black text-slate-700 text-[10px] shadow-[1px_0_0_#cbd5e1]">전체합계</th>
                       {roomMatrixData.columns.map((col, i) => (
-                        <th key={i} colSpan="2" className="p-2 whitespace-nowrap text-[10px] text-slate-500 bg-white border-t-0 border-b border-l border-r border-slate-200">{col.projectId}</th>
+                        <th key={i} colSpan="2" className={`p-2 whitespace-nowrap text-[10px] border-t-0 border-b border-l border-r border-slate-200 ${col.isActive ? 'text-slate-500 bg-white' : 'text-slate-400 bg-slate-50'}`}>
+                          {col.projectId}
+                        </th>
                       ))}
                     </tr>
                     <tr>
@@ -658,10 +697,12 @@ export default function Dashboard() {
                       <th className="p-2 sticky-col-2"></th>
                       <th className="p-2 sticky-col-3 shadow-[1px_0_0_#cbd5e1]"></th>
                       {roomMatrixData.columns.map((col, i) => (
-                        <th key={i} colSpan="2" className="p-2 whitespace-nowrap text-[11px] font-bold text-slate-700 bg-white border-b-0">
+                        <th key={i} colSpan="2" className={`p-2 whitespace-nowrap text-[11px] font-bold border-b-0 ${col.isActive ? 'text-slate-700 bg-white' : 'text-slate-400 bg-slate-50'}`}>
                           {col.strain}
                           {col.strainDetail && (
-                            <span className="block mt-0.5 text-[9px] font-black text-rose-500 bg-rose-50 rounded px-1">{col.strainDetail}</span>
+                            <span className={`block mt-0.5 text-[9px] font-black rounded px-1 ${col.isActive ? 'text-rose-500 bg-rose-50' : 'text-slate-400 bg-slate-200'}`}>
+                              {col.strainDetail}
+                            </span>
                           )}
                         </th>
                       ))}
@@ -671,7 +712,9 @@ export default function Dashboard() {
                       <th className="p-2 sticky-col-2 text-[10px]">케이지</th>
                       <th className="p-2 sticky-col-3 shadow-[1px_0_0_#cbd5e1] text-[10px]">마릿수</th>
                       {roomMatrixData.columns.map((col, i) => (
-                        <th key={i} colSpan="2" className="p-2 whitespace-nowrap text-xs font-black text-emerald-700 bg-emerald-50/50">{col.rackId}동</th>
+                        <th key={i} colSpan="2" className={`p-2 whitespace-nowrap text-xs font-black ${col.isActive ? 'text-emerald-700 bg-emerald-50/50' : 'text-slate-400 bg-slate-100 border-b border-slate-200'}`}>
+                          {col.rackId}동
+                        </th>
                       ))}
                     </tr>
                     <tr className="bg-slate-200">
@@ -703,12 +746,14 @@ export default function Dashboard() {
                           {roomMatrixData.colKeys.map((colKey, cIdx) => {
                             const cell = rowData.values[colKey];
                             const hasData = cell && cell.cages > 0;
+                            const isActiveCol = roomMatrixData.columns[cIdx].isActive;
+
                             return (
                               <React.Fragment key={cIdx}>
-                                <td className={`p-2 ${hasData ? 'font-bold text-slate-700' : 'text-slate-200'} bg-white border-l text-[11px]`}>
+                                <td className={`p-2 ${hasData ? 'font-bold text-slate-700' : 'text-slate-200'} border-l text-[11px] ${isActiveCol ? 'bg-white' : 'bg-slate-50'}`}>
                                   {hasData ? cell.cages.toLocaleString() : '-'}
                                 </td>
-                                <td className={`p-2 ${hasData ? 'font-bold text-slate-700 bg-slate-50/50' : 'text-slate-200'} border-r border-slate-200 text-[11px]`}>
+                                <td className={`p-2 ${hasData ? 'font-bold text-slate-700' : 'text-slate-200'} border-r border-slate-200 text-[11px] ${hasData && isActiveCol ? 'bg-slate-50/50' : !isActiveCol ? 'bg-slate-100' : ''}`}>
                                   {hasData ? cell.heads.toLocaleString() : '-'}
                                 </td>
                               </React.Fragment>
@@ -744,7 +789,7 @@ export default function Dashboard() {
                   </div>
                 )}
               </div>
-              {/* [수정됨] 안내 문구 변경 */}
+              {/* 안내 문구 변경 */}
               <p className="text-xs text-slate-500 font-medium mt-1">
                 현재 조건에 맞는 케이지 <span className="font-bold text-indigo-500">{filteredTableData.length}</span>개가 표시되고 있습니다. <span className="font-bold text-indigo-500">(기본 설정: 오늘 기록분)</span> 과거 데이터를 보려면 달력 기간을 조정해주세요.
               </p>
@@ -816,7 +861,7 @@ export default function Dashboard() {
                 {filterOptions.projects.map(p => <option key={p} value={p}>{p}</option>)}
               </select>
 
-              {/* [수정됨] 조건 초기화 버튼 노출 여부: 날짜가 '오늘'이 아니거나 다른 필터가 켜져있을 때만 등장 */}
+              {/* 조건 초기화 버튼 노출 여부: 날짜가 '오늘'이 아니거나 다른 필터가 켜져있을 때만 등장 */}
               {(filterSpecies !== '전체' || filterPI !== '전체' || filterProject !== '전체' || tableStartDate !== todayStr || tableEndDate !== todayStr) && (
                 <button 
                   onClick={() => { 
@@ -877,7 +922,7 @@ export default function Dashboard() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filteredTableData.length === 0 ? (
-                <tr><td colSpan="6" className="p-12 text-center text-slate-400 font-medium">검색 및 필터 조건에 맞는 데이터가 없습니다. 날짜를 변경해 보세요.</td></tr>
+                <tr><td colSpan="6" className="p-12 text-center text-slate-400 font-medium">선택하신 날짜({tableStartDate} ~ {tableEndDate})에 해당하는 기록이 없습니다.</td></tr>
               ) : (
                 filteredTableData.map((row, idx) => (
                   <tr key={idx} className="hover:bg-slate-50 transition-colors print:break-inside-avoid">
